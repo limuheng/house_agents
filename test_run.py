@@ -1,8 +1,9 @@
 # test_run.py - 樹莓派本地端工具實地驗證腳本 (相容 2026 CrewAI 最新版)
 import os
 import sqlite3
+from datetime import datetime
 
-# 💡 這裡直接匯入原始工具的原生底層 Python 函式，100% 避免因 CrewAI 改版升級引起的 fn 屬性變更錯誤
+# 💡 匯入原生 CrewAI Tool 物件
 from tools.real_estate_tools import real_estate_collector_tool
 
 def verify_database():
@@ -42,7 +43,6 @@ def verify_database():
         print("-" * 80)
         for row in rows:
             status = "🛑 已解約(幽靈單)" if row[5] == 1 else "🟢 正常成交"
-            # 格式化輸出
             print(f"{str(row[0]):<12} | {str(row[1]):<12} | {str(row[2]):<18} | {row[3]:<8.2f} | {row[4]:<14,} | {status}")
         print("-" * 80)
         
@@ -53,19 +53,22 @@ def verify_database():
 def main():
     print("====== 🚀 啟動實體資料採集特工工具測試 ======")
     
-    # 💡 修正 2026 CrewAI 框架限制：
-    # 由於採集工具是用 @tool 裝飾器包裝的，最新版可以使用 tool._run() 
-    # 或者如果對象有底層 func，我們可以直接透過 tool.func() 呼叫
-    try:
-        if hasattr(real_estate_collector_tool, '_run'):
-            result = real_estate_collector_tool._run()
-        else:
-            # 備用安全手段
-            result = real_estate_collector_tool()
-    except Exception as e:
-        # 如果框架裝飾器完全鎖死，直接呼叫底层包裹的實體原生函式
-        from tools.real_estate_tools import real_estate_collector_tool as raw_func
-        result = raw_func()
+    # 🎯 終極修復：利用 2026 CrewAI 官方標準解鎖手段提取底層實體純 Python 函式
+    raw_python_func = None
+    
+    # 優先手段：提取內建裝飾器封裝的實體原生功能
+    if hasattr(real_estate_collector_tool, 'func') and real_estate_collector_tool.func is not None:
+        raw_python_func = real_estate_collector_tool.func
+    elif hasattr(real_estate_collector_tool, 'fn') and real_estate_collector_tool.fn is not None:
+        raw_python_func = real_estate_collector_tool.fn
+    
+    if raw_python_func:
+        print("💡 成功破除 CrewAI 沙盒限制，正在以 Python 原生直連狀態扣下扳機...")
+        result = raw_python_func()
+    else:
+        # 保底手段：如果被深度封裝，直接使用底層標準的 _run 傳參驅動
+        print("💡 採用標準 _run() 屬性驅動工具...")
+        result = real_estate_collector_tool._run()
         
     print("\n[工具執行回傳摘要]")
     print(result)
@@ -75,4 +78,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
