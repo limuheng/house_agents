@@ -1,66 +1,141 @@
+import os
 import sqlite3
+import yaml
+import pandas as pd
 from crewai.tools import tool
 
-DB_FILE = "real_estate.db"
+DB_PATH = "real_estate.db"
+CONFIG_PATH = "config.yaml"
 
-@tool("Execute Database Analytical Query")
-def execute_read_only_query(sql_string: str) -> str:
-    """執行唯讀的 SQL 查詢來分析資料庫中的房地產實價登錄與解約數據。"""
-    forbidden_keywords = ["insert", "update", "delete", "drop", "alter", "truncate", "create"]
-    if any(kw in sql_string.lower() for kw in forbidden_keywords):
-        return "錯誤：基於安全性考量，禁止執行任何非唯讀的 SQL 修改指令。"
+# =====================================================================
+# 🧱 核心拆解子元件（Sub-functions）
+# =====================================================================
+
+def load_analyst_config() -> tuple:
+    """💡 子元件 1：安全讀取動態設定檔，回傳坪數級距與監控熱區"""
+    if not os.path.exists(CONFIG_PATH):
+        raise FileNotFoundError(f"找不到設定檔: {CONFIG_PATH}")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
     
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql_string)
-            columns = [description[0] for description in cursor.description]
-            rows = cursor.fetchall()
+    intervals = config.get('analysis_indicators', {}).get('ping_intervals', [])
+    hotspots = config.get('monitoring_settings', {}).get('hotspots', [])
+    return intervals, hotspots
+
+
+def calculate_interval_metrics(df_all: pd.DataFrame, intervals: list) -> pd.DataFrame:
+    """💡 子元件 2：專職計算各實際淨坪級距之價量中位數與解約量 (繞過 SQLite 無中位數限制)"""
+    interval_results = []
+    
+    for iv in intervals:
+        min_p = float(iv['min'])
+        max_p = float(iv['max'])
+        label = iv['label']
+        
+        # 進行記憶體切片過濾
+        sub_df = df_all[(df_all['actual_ping'] >= min_p) & (df_all['actual_ping'] < max_p)].copy()
+        
+        if sub_df.empty:
+            interval_results.append({
+                "級距標籤": label, "去化量": 0, 
+                "單價中位數(元/坪)": "N/A", "總價中位數": "N/A", "已解約幽靈單": 0
+            })
+            continue
             
-            if not rows:
-                return "查詢成功，但資料庫中尚無符合此條件的數據。"
-                
-            result = [", ".join(columns)]
-            for row in rows[:50]:
-                result.append(", ".join(str(val) for val in row))
-            if len(rows) > 50:
-                result.append(f"...(餘下 {len(rows)-50} 筆資料已省略，請改用 COUNT(*) 或 AVG 等聚合函數查詢)")
-            return "\n".join(result)
-    except Exception as e:
-        return f"SQL 執行失敗，請修正語法錯誤。錯誤訊息: {str(e)}"
+        # 計算預估總價（單價 * 權狀總坪數）
+        sub_df['estimated_total'] = sub_df['price_per_ping'] * sub_df['total_ping']
+        
+        # 精確中位數計算
+        med_price = int(sub_df['price_per_ping'].median())
+        med_total = int(sub_df['estimated_total'].median())
+        cancel_count = int(sub_df['is_cancelled'].sum())
+        
+        interval_results.append({
+            "級距標籤": label,
+            "去化量": len(sub_df),
+            "單價中位數(元/坪)": f"{med_price:,}",
+            "總價中位數": f"{(med_total / 10000):.1f} 萬",
+            "已解約幽靈單": cancel_count
+        })
+        
+    return pd.DataFrame(interval_results)
+
+
+def calculate_regional_cancellation_rates(df_all: pd.DataFrame, hotspots: list) -> pd.DataFrame:
+    """💡 子元件 3：專職計算焦點熱區的技術性解約率與黑名單排行榜"""
+    region_results = []
+    
+    # 短行政區特徵提取（如 '竹北市' 保持 '竹北市'，'苗栗縣頭份市' 轉為 '頭份市'）
+    clean_spots = [s[-3:] if any(k in s for k in ["市", "鄉", "鎮", "區"]) else s for s in hotspots]
+    
+    for spot in clean_spots:
+        # 模糊匹配資料庫中的 region 欄位
+        r_df = df_all[df_all['region'].str.contains(spot, na=False)]
+        
+        if r_df.empty:
+            continue
+            
+        total_deals = len(r_df)
+        cancel_deals = int(r_df['is_cancelled'].sum())
+        cancel_rate = (cancel_deals / total_deals * 100) if total_deals > 0 else 0.0
+        
+        region_results.append({
+            "行政區域": spot,
+            "總成交筆數": total_deals,
+            "已解約幽靈單": cancel_deals,
+            "技術性解約率": cancel_rate  # 保持浮點數以利後續排序
+        })
+        
+    if not region_results:
+        return pd.DataFrame()
+        
+    # 轉成 DataFrame 並依據解約率從高到低進行無情排行
+    df_regions = pd.DataFrame(region_results).sort_values(by="技術性解約率", ascending=False)
+    # 格式化輸出百分比字串
+    df_regions['技術性解約率'] = df_regions['技術性解約率'].map(lambda x: f"{x:.1f} %")
+    return df_regions
+
+# =====================================================================
+# 👑 CrewAI 頂層唯一呼叫引腳 (不改變原先命名，主程式無痛對齊)
+# =====================================================================
 
 @tool("Quick Region Trend Lookup Tool")
-def query_region_trend_tool(location: str) -> str:
-    """
-    【高階快捷工具】只要輸入行政區名稱（例如：頭份市、竹北市），
-    即可一鍵撈出該區所有預售屋建案的成交總量、實際淨坪平均單價、以及被建商技術性解約的幽靈單數量。
-    不需自寫 SQL 語法，優先推薦使用。
-    """
+def query_region_trend_tool() -> str:
+    """一鍵速查本地 SQLite 資料庫，自動依據 config.yaml 的坪數級距，計算出精確的單總價中位數、去化量與解約幽靈單比例。"""
+    if not os.path.exists(DB_PATH):
+        return "【查詢失敗】找不到實體 real_estate.db 資料庫，請催促數據工程師先執行採集工具。"
+        
     try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 
-                    project_name as 建案名稱,
-                    COUNT(*) as 總成交筆數,
-                    SUM(CASE WHEN is_cancelled = 1 THEN 1 ELSE 0 END) as 已解約筆數,
-                    ROUND(AVG(price_per_ping)) as 實際淨坪平均單價_元
-                FROM real_estate_deals 
-                WHERE region LIKE ? 
-                GROUP BY project_name 
-                ORDER BY 總成交筆數 DESC
-            """, (f"%{location}%",))
-            rows = cursor.fetchall()
+        # 1. 讀取動態設定檔參數 (子元件 1)
+        intervals, hotspots = load_analyst_config()
+        
+        # 2. 將全量數據加載至記憶體
+        conn = sqlite3.connect(DB_PATH)
+        df_all = pd.read_sql_query("SELECT * FROM real_estate_deals", conn)
+        conn.close()
+        
+        if df_all.empty:
+            return "【情報提示】實體資料庫目前為空空如也狀態，請先啟動採集特工注入真實數據。"
             
-        if not rows:
-            return f"【查詢完成】在資料庫中找不到該區域（{location}）的歷史實登數據。"
+        # 🧱 開始依模組化拼裝文字報告
+        report = ["\n" + "="*80, "📊 房地產數據科學家防禦武器：動態級距與中位數核心查核報告", "="*80]
+        
+        # 3. 調用級距計算機 (子元件 2)
+        report.append("\n👑 【指標一：各實際淨坪級距價量中位數精確審計】")
+        df_intervals = calculate_interval_metrics(df_all, intervals)
+        report.append(df_intervals.to_string(index=False))
+        
+        # 4. 調用解約率排行計算機 (子元件 3)
+        report.append("\n👑 【指標二：焦點行政區預售解約率黑名單】")
+        df_regions = calculate_regional_cancellation_rates(df_all, hotspots)
+        
+        if not df_regions.empty:
+            report.append(df_regions.to_string(index=False))
+        else:
+            report.append("  (當前監控熱區內尚無實體登錄成交或解約紀錄)")
             
-        report = f"### 📊 【{location}】最新建案籌碼與價格走勢速查表\n"
-        report += "| 建案名稱 | 總成交筆數 | 標記解約(幽靈單) | 實際室室淨坪均價 (每坪/元) |\n"
-        report += "| :--- | :---: | :---: | :---: |\n"
-        for row in rows[:30]:
-            cancel_warn = f"⚠️ {row[2]} 筆" if row[2] > 0 else "0 筆 (正常)"
-            report += f"| {row[0]} | {row[1]} 戶 | {cancel_warn} | {row[3]:,} 元 |\n"
-        return report
+        report.append("="*80)
+        return "\n".join(report)
+        
     except Exception as e:
-        return f"快捷查詢失敗，原因：{str(e)}"
+        return f"【工具底層崩潰】Quick Region Trend Lookup Tool 內部分解執行故障: {str(e)}"
