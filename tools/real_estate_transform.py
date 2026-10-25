@@ -62,15 +62,18 @@ def _record_fields(row, is_presale: int, county_code: str,
     if project_name == "nan":
         project_name = address
     floor = str(row.get("移轉層次", ""))
-    fingerprint = f"{county_code}_{project_name}_{address}_{floor}_{total_ping:.3f}"
+    deal_date = _deal_date(row.get("交易年月日", ""))
+    unit_id = str(row.get("編號", ""))
+    legacy_fingerprint = f"{county_code}_{project_name}_{address}_{floor}_{total_ping:.3f}"
+    fingerprint = f"{legacy_fingerprint}_{deal_date}_{unit_id}"
     cancelled = int("解約" in str(row.get("備註", "")))
     return {
-        "deal_date": _deal_date(row.get("交易年月日", "")),
+        "deal_date": deal_date,
         "region": f"{parent_county}{row.get('鄉鎮市區', '')}",
         "project_name": project_name,
         "building_type": str(row.get("建物型態", "")),
         "floor": floor,
-        "unit_id": str(row.get("編號", "")),
+        "unit_id": unit_id,
         "total_ping": total_ping,
         "actual_ping": actual_ping,
         "parking_price": int(_number(row, "車位總價元")),
@@ -79,6 +82,7 @@ def _record_fields(row, is_presale: int, county_code: str,
         "is_cancelled": cancelled,
         "cancelled_date": datetime.now().strftime("%Y-%m-%d") if cancelled else None,
         "fingerprint": fingerprint,
+        "legacy_fingerprint": legacy_fingerprint,
     }
 
 
@@ -93,8 +97,12 @@ def cancelled_fingerprints(csv_path: str, county_code: str,
 
 def _fingerprint(row, county_code: str) -> str:
     """依交易識別欄位產生與匯入程序一致的指紋。"""
-    project = row.get("建案名稱", "未知建案")
-    address = row.get("土地位置建物門牌", "")
-    floor = row.get("移轉層次", "")
+    address = str(row.get("土地位置建物門牌", "未知社區"))
+    project_value = row.get("建案名稱")
+    project = str(project_value) if pd.notna(project_value) else address
+    floor = str(row.get("移轉層次", ""))
     ping = _number(row, "建物移轉總面積平方公尺") * 0.3025
-    return f"{county_code}_{project}_{address}_{floor}_{ping:.3f}"
+    legacy = f"{county_code}_{project}_{address}_{floor}_{ping:.3f}"
+    deal_date = _deal_date(row.get("交易年月日", ""))
+    unit_id = str(row.get("編號", ""))
+    return f"{legacy}_{deal_date}_{unit_id}"

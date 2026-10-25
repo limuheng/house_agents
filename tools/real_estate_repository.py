@@ -48,10 +48,25 @@ class RealEstateRepository:
         if not record:
             return False
         try:
+            self._migrate_legacy_fingerprint(cursor, record)
             cursor.execute(_UPSERT_SQL, _record_values(record))
             return cursor.rowcount > 0
         except sqlite3.Error:
             return False
+
+    def _migrate_legacy_fingerprint(self, cursor, record: dict) -> None:
+        """首次遇到舊指紋時升級為含交易日期的指紋。"""
+        legacy = record.get("legacy_fingerprint")
+        if not legacy or legacy == record["fingerprint"]:
+            return
+        try:
+            cursor.execute(
+                "UPDATE real_estate_deals SET fingerprint=? WHERE fingerprint=?",
+                (record["fingerprint"], legacy)
+            )
+        except sqlite3.IntegrityError:
+            # 新指紋若已存在，保留舊列並由後續 Upsert 更新新列。
+            return
 
     def mark_cancelled(self, cursor, fingerprints: list[str]) -> int:
         """依指紋標記解約交易並回傳更新筆數。"""

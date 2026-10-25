@@ -1,4 +1,5 @@
 # house_agent.py - CrewAI 房地產情報監控核心主程式
+import argparse
 import yaml
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
@@ -7,6 +8,7 @@ from crewai.tools import tool
 from tools.real_estate_tools import real_estate_collector_tool
 from tools.analyst_tools import query_region_trend_tool
 from tools.report_writer import write_markdown_report
+from tools.historical_backfill import build_preview, historical_backfill_tool
 
 from dotenv import load_dotenv
 load_dotenv()  # 🎯 物理補丁：啟動時自動把同目錄下的 .env 變數灌進樹莓派記憶體中
@@ -54,6 +56,19 @@ market_analyst = Agent(
     max_iter=3
 )
 
+historical_data_agent = Agent(
+    role="歷史房地產資料回補工程師",
+    goal="依設定逐季補齊內政部歷史實價登錄，並回報下載與資料庫匯入摘要。",
+    backstory=(
+        "你只負責呼叫歷史資料回補工具。工具會逐季取得設定縣市的買賣與預售 CSV，"
+        "驗證後沿用既有資料轉換與 SQLite 去重流程。不得自行拼接網址或宣稱未完成的工作成功。"
+    ),
+    tools=[historical_backfill_tool],
+    verbose=True,
+    llm=gemini_llm,
+    max_iter=2
+)
+
 # --- 📋 建立 Tasks ---
 collect_task = Task(
     description=(
@@ -99,10 +114,49 @@ analyze_task_3 = Task(
     agent=market_analyst
 )
 
+historical_backfill_task = Task(
+    description=(
+        "請直接呼叫 Historical Real Estate Backfill Tool 一次，"
+        "依設定從 109S1 起逐季下載所有監控縣市的買賣 A 與預售 B 資料，"
+        "並回報完成季度、下載/快取/無資料/失敗數及新增或更新筆數。"
+        "不要自行下載、讀取大型 CSV 或直接操作資料庫。"
+    ),
+    expected_output="歷史資料回補結果摘要，列明季度範圍、檔案狀態及資料庫匯入筆數。",
+    agent=historical_data_agent
+)
+
 # ==========================================
 # 🚀 組裝 Crew 與執行流程
 # ==========================================
+def _run_historical_backfill() -> None:
+    """只執行使用者明確指定的歷史回補 Crew。"""
+    crew = Crew(
+        agents=[historical_data_agent],
+        tasks=[historical_backfill_task],
+        process=Process.sequential,
+        verbose=True,
+        max_rpm=10
+    )
+    print(crew.kickoff())
+
+
+def _parse_args():
+    """解析一般分析、回補預覽及實際回補選項。"""
+    parser = argparse.ArgumentParser(description="房地產資料採集與歷史回補")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--plan-backfill", action="store_true", help="僅預覽回補範圍")
+    mode.add_argument("--backfill-history", action="store_true", help="執行歷史資料回補")
+    return parser.parse_args()
+
+
 def main():
+    args = _parse_args()
+    if args.plan_backfill:
+        print(build_preview())
+        return
+    if args.backfill_history:
+        _run_historical_backfill()
+        return
     crew = Crew(
         agents=[data_collector, market_analyst],
         tasks=[collect_task, analyze_task_1, analyze_task_2, analyze_task_3],

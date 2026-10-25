@@ -17,6 +17,13 @@ monitoring_settings:
     - "中壢區"
     - "大園區"
 
+# 歷史實價登錄逐季回補設定；執行需明確使用 --backfill-history
+historical_backfill:
+  start_season: "109S1"
+  end_season: "latest"
+  data_types: ["A", "B"]
+  history_dir: "extracted_data/history"
+
 analysis_indicators:
   # 彈性坪數級距定義：未來想改看鳥籠或豪宅，修改此數字與標籤即可，SQL工具會動態組裝
   ping_intervals:
