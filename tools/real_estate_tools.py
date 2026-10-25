@@ -1,13 +1,17 @@
 import os
-import zipfile
 import sqlite3
 import yaml
 import time
 import random
 import requests  # 保留內建的，給其他標準傳輸使用
 from curl_cffi import requests as curl_requests  # 重新命名，徹底避開覆蓋衝突
-from datetime import datetime
 from crewai.tools import tool
+from tools.real_estate_repository import RealEstateRepository
+from tools.real_estate_transform import (
+    cancelled_fingerprints,
+    clean_hotspots,
+    parse_transaction,
+)
 
 DB_PATH = "real_estate.db"
 CONFIG_PATH = "config.yaml"
@@ -31,33 +35,7 @@ def load_config():
 class RealEstateDataTool:
     @staticmethod
     def init_database():
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS real_estate_deals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                deal_date TEXT NOT NULL,
-                region TEXT NOT NULL,
-                project_name TEXT,
-                building_type TEXT,
-                floor TEXT,
-                unit_id TEXT,
-                total_ping REAL,
-                actual_ping REAL,
-                parking_price INTEGER,
-                price_per_ping INTEGER,
-                house_age REAL,
-                is_presale BOOLEAN DEFAULT 0,
-                is_cancelled BOOLEAN DEFAULT 0,
-                cancelled_date TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fingerprint TEXT UNIQUE
-            )
-        ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_region ON real_estate_deals(region);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_project ON real_estate_deals(project_name);')
-        conn.commit()
-        conn.close()
+        RealEstateRepository(DB_PATH).initialize()
 
     @staticmethod
     def inject_sandbox_data():
@@ -164,168 +142,92 @@ def download_official_zip(url_placeholder: str, zip_path_placeholder: str, extra
 
 def extract_clean_hotspots(hotspots_config: list) -> list:
     """💡 子元件 2-1：將 config 的 hotspots 轉為 3 字短特徵（例如 頭份市 保持 頭份市），對齊官方 CSV 格式"""
-    clean_hotspots = []
-    for spot in hotspots_config:
-        if any(keyword in spot for keyword in ["市", "鄉", "鎮", "區"]):
-            clean_hotspots.append(spot[-3:])
-        else:
-            clean_hotspots.append(spot)
-    return clean_hotspots
+    return clean_hotspots(hotspots_config)
 
 
 def parse_single_row_to_record(row, is_presale: int, county_code: str, parent_county: str) -> dict:
     """💡 子元件 2-2：純粹的資料解析器，負責將單行真實交易換算為 SQLite 標準格式，並生成全台唯一的特徵指紋"""
-    try:
-        import pandas as pd
-        total_price = float(row.get('總價元', 0))
-        main_area = float(row.get('主建物面積', 0)) if pd.notna(row.get('主建物面積')) else 0
-        sub_area = float(row.get('附屬建物面積', 0)) if pd.notna(row.get('附屬建物面積')) else 0
-        total_area_raw = float(row.get('建物移轉總面積平方公尺', 0)) if pd.notna(row.get('建物移轉總面積平方公尺')) else 0
-        
-        total_ping = total_area_raw * 0.3025
-        actual_ping = (main_area + sub_area) * 0.3025
-        if actual_ping <= 0:
-            actual_ping = total_ping
-
-        if total_ping <= 0 or total_price <= 0:
-            return None
-
-        # 換算每坪單價，並將民國交易年月日轉換為標準 ISO 格式（如 1150915 -> 2026-09-15）
-        price_per_ping = int(round(total_price / total_ping)) if is_presale else int(float(row.get('單價元平方公尺', 0)) * 3.3058)
-        raw_date = str(row.get('交易年月日', ''))
-        deal_date = f"{str(int(raw_date[:-4]) + 1911)}-{raw_date[-4:-2]}-{raw_date[-2:]}" if len(raw_date) >= 6 else raw_date
-
-        region_name = f"{parent_county}{row.get('鄉鎮市區','')}"
-        
-        # 核心補丁：安全相容成屋缺失建案名稱欄位的問題，改拿門牌做識別
-        project_name = str(row.get('建案名稱')) if pd.notna(row.get('建案名稱')) else str(row.get('土地位置建物門牌', '未知社區'))
-        if project_name == 'nan' or not project_name:
-            project_name = str(row.get('土地位置建物門牌', '未知社區'))
-
-        b_type = str(row.get('建物型態', ''))
-        floor = str(row.get('移轉層次', ''))
-        address = str(row.get('土地位置建物門牌', ''))
-        parking_price = int(row.get('車位總價元', 0)) if pd.notna(row.get('車位總價元')) else 0
-        unit_id = str(row.get('編號', ''))
-
-        # 生成全台唯一交易指紋，防堵重試時重複寫入
-        fingerprint = f"{county_code}_{project_name}_{address}_{floor}_{total_ping:.3f}"
-        is_cancelled = 1 if "解約" in str(row.get('備註', '')) else 0
-        cancelled_date = datetime.now().strftime("%Y-%m-%d") if is_cancelled else None
-
-        return {
-            "deal_date": deal_date, "region": region_name, "project_name": project_name,
-            "building_type": b_type, "floor": floor, "unit_id": unit_id,
-            "total_ping": total_ping, "actual_ping": actual_ping, "parking_price": parking_price,
-            "price_per_ping": price_per_ping, "is_presale": is_presale,
-            "is_cancelled": is_cancelled, "cancelled_date": cancelled_date, "fingerprint": fingerprint
-        }
-    except Exception:
-        return None
+    return parse_transaction(row, is_presale, county_code, parent_county)
 
 
 def execute_sqlite_upsert(cursor, rec: dict) -> bool:
     """💡 子元件 2-3：專職的資料庫 Upsert 執行器，當指紋衝突時自動更新最新狀態，不重複塞筆數"""
-    if not rec:
-        return False
-    try:
-        cursor.execute('''
-            INSERT INTO real_estate_deals (
-                deal_date, region, project_name, building_type, floor, unit_id,
-                total_ping, actual_ping, parking_price, price_per_ping, house_age,
-                is_presale, is_cancelled, cancelled_date, fingerprint
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-            ON CONFLICT(fingerprint) DO UPDATE SET
-                price_per_ping = excluded.price_per_ping,
-                is_cancelled = CASE WHEN real_estate_deals.is_cancelled = 1 THEN 1 ELSE excluded.is_cancelled END,
-                cancelled_date = CASE WHEN real_estate_deals.is_cancelled = 1 THEN real_estate_deals.cancelled_date ELSE excluded.cancelled_date END
-        ''', (rec["deal_date"], rec["region"], rec["project_name"], rec["building_type"], rec["floor"], rec["unit_id"],
-              rec["total_ping"], rec["actual_ping"], rec["parking_price"], rec["price_per_ping"],
-              rec["is_presale"], rec["is_cancelled"], rec["cancelled_date"], rec["fingerprint"]))
-        return cursor.rowcount > 0
-    except Exception:
-        return False
+    return RealEstateRepository(DB_PATH).upsert(cursor, rec)
 
 
 def audit_cancelled_deals(cursor, presale_file: str, county_code: str, hotspots: list) -> int:
     """💡 子元件 2-4：交叉勾稽模組，掃描當期歷史數據中的解約備註，反向標記資料庫中的過往訂單"""
-    import pandas as pd
-    cancelled_count = 0
     try:
-        df_cancel = pd.read_csv(presale_file, skiprows=[1], low_memory=False)
-        df_cancel = df_cancel[df_cancel['鄉鎮市區'].isin(hotspots)]
-        df_cancel = df_cancel[df_cancel['備註'].str.contains('解約|取消', na=False, errors='ignore')]
-        
-        for _, row in df_cancel.iterrows():
-            p_name = str(row.get('建案名稱', '未知建案'))
-            addr = str(row.get('土地位置建物門牌', ''))
-            flr = str(row.get('移轉層次', ''))
-            t_ping = float(row.get('建物移轉總面積平方公尺', 0)) * 0.3025
-            cf = f"{county_code}_{p_name}_{addr}_{flr}_{t_ping:.3f}"
-            
-            cursor.execute('''
-                UPDATE real_estate_deals 
-                SET is_cancelled = 1, cancelled_date = ? 
-                WHERE fingerprint = ? AND is_cancelled = 0
-            ''', (datetime.now().strftime("%Y-%m-%d"), cf))
-            cancelled_count += cursor.rowcount
+        fingerprints = cancelled_fingerprints(presale_file, county_code, hotspots)
+        return RealEstateRepository(DB_PATH).mark_cancelled(cursor, fingerprints)
     except Exception:
-        pass
-    return cancelled_count
+        return 0
 
 
 def process_and_import_data(extract_dir: str, target_codes: list, hotspots: list, target_regions: list) -> tuple:
     """💡 子功能控制器 2：大數據整合核心，協調資料讀取、過濾與子元件調用"""
-    import pandas as pd
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    total_inserted = 0
-    total_cancelled = 0
-    
     clean_hotspots = extract_clean_hotspots(hotspots)
     print(f"\n🚨 [進入 Pandas 洗滌面版] 當前監控熱區一擊必殺匹配: {clean_hotspots}")
+    repository = RealEstateRepository(DB_PATH)
+    with repository.transaction() as conn:
+        totals = _import_counties(conn.cursor(), repository, extract_dir,
+                                  zip(target_codes, target_regions), clean_hotspots)
+    return totals
 
-    for county_code in target_codes:
-        county_lower = county_code.lower()
-        parent_county = target_regions[target_codes.index(county_code)]
-        
-        target_files = [
-            {"path": os.path.join(extract_dir, f"{county_lower}_lvr_land_b.csv"), "is_presale": 1, "label": "預售屋"},
-            {"path": os.path.join(extract_dir, f"{county_lower}_lvr_land_a.csv"), "is_presale": 0, "label": "成屋"}
-        ]
-        
-        for f_info in target_files:
-            file_path = f_info["path"]
-            if not os.path.exists(file_path):
-                continue
-                
-            try:
-                # 關鍵修復：內政部官方格式第一行為英文、第二行為中文，必須使用 skiprows=[1] 精準過濾
-                df = pd.read_csv(file_path, skiprows=[1], low_memory=False)
-                df = df[df['鄉鎮市區'].isin(clean_hotspots)]
-                df = df[df['建物型態'].str.contains('大樓|華廈|透天', na=False, regex=True)]
-                
-                print(f"📖 正在解析 【{parent_county}】 的當期 {f_info['label']} 數據，符合熱區篩選共: {len(df)} 筆")
-                
-                for _, row in df.iterrows():
-                    # 呼叫解析器
-                    rec = parse_single_row_to_record(row, f_info["is_presale"], county_code, parent_county)
-                    # 呼叫 SQL 執行器
-                    if rec and execute_sqlite_upsert(cursor, rec):
-                        total_inserted += 1
-                        if rec["is_cancelled"]:
-                            total_cancelled += 1
-            except Exception as e:
-                print(f"⚠️ 解析實體檔案 {file_path} 時發生結構崩潰: {str(e)}")
-                
-        # 執行歷史大數據交叉勾稽
-        presale_path = os.path.join(extract_dir, f"{county_lower}_lvr_land_b.csv")
-        if os.path.exists(presale_path):
-            total_cancelled += audit_cancelled_deals(cursor, presale_path, county_code, clean_hotspots)
-            
-    conn.commit()
-    conn.close()
-    return total_inserted, total_cancelled
+
+def _import_counties(cursor, repository, extract_dir: str,
+                     counties, hotspots: list[str]) -> tuple[int, int]:
+    """協調各縣市成屋、預售屋匯入及解約勾稽。"""
+    inserted = cancelled = 0
+    for code, county in counties:
+        county_totals = _import_county(cursor, repository, extract_dir,
+                                       code, county, hotspots)
+        inserted += county_totals[0]
+        cancelled += county_totals[1]
+    return inserted, cancelled
+
+
+def _import_county(cursor, repository, extract_dir: str, code: str,
+                   county: str, hotspots: list[str]) -> tuple[int, int]:
+    """處理單一縣市資料檔及對應解約紀錄。"""
+    import pandas as pd
+
+    code = code.lower()
+    inserted = cancelled = 0
+    for suffix, is_presale, label in (("b", 1, "預售屋"), ("a", 0, "成屋")):
+        path = os.path.join(extract_dir, f"{code}_lvr_land_{suffix}.csv")
+        if not os.path.exists(path):
+            continue
+        try:
+            count, marked = _import_file(cursor, repository, path, is_presale,
+                                         code, county, hotspots, label)
+            inserted += count
+            cancelled += marked
+        except Exception as error:
+            print(f"⚠️ 解析實體檔案 {path} 失敗: {error}")
+    presale_path = os.path.join(extract_dir, f"{code}_lvr_land_b.csv")
+    if os.path.exists(presale_path):
+        cancelled += audit_cancelled_deals(cursor, presale_path, code, hotspots)
+    return inserted, cancelled
+
+
+def _import_file(cursor, repository, path: str, is_presale: int,
+                 code: str, county: str, hotspots: list[str],
+                 label: str) -> tuple[int, int]:
+    """讀取、篩選來源 CSV，並將轉換後紀錄交由儲存層寫入。"""
+    import pandas as pd
+
+    df = pd.read_csv(path, skiprows=[1], low_memory=False)
+    df = df[df["鄉鎮市區"].isin(hotspots)]
+    df = df[df["建物型態"].str.contains("大樓|華廈|透天", na=False, regex=True)]
+    print(f"📖 正在解析【{county}】{label}，符合熱區篩選共: {len(df)} 筆")
+    inserted = cancelled = 0
+    for _, row in df.iterrows():
+        record = parse_single_row_to_record(row, is_presale, code, county)
+        if repository.upsert(cursor, record):
+            inserted += 1
+            cancelled += int(record["is_cancelled"])
+    return inserted, cancelled
 
 # =====================================================================
 # 👑 3. CrewAI 唯一註冊與執行引腳 (不允許任何提早 return)

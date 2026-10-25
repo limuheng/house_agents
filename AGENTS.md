@@ -8,7 +8,10 @@
 
 - `house_agent.py`：CrewAI Agent、Task 與主執行流程。
 - `tools/real_estate_tools.py`：官方資料下載、解析、SQLite 寫入與解約勾稽。
+- `tools/real_estate_transform.py`：官方交易資料的純轉換與解約指紋擷取。
+- `tools/real_estate_repository.py`：SQLite schema 初始化、交易寫入與解約標記。
 - `tools/analyst_tools.py`：資料庫查詢、坪數級距統計與熱區解約分析。
+- `tools/report_writer.py`：Markdown 報告檔案輸出。
 - `config.yaml`：監控縣市、觀察熱區及分析級距設定。
 - `test_run.py`、`test_analyst.py`：手動驗證腳本。
 - `real_estate.db`、`extracted_data/`、`report/`：執行資料與報告；修改前先確認其是否為使用者資料。

@@ -1,6 +1,4 @@
 # house_agent.py - CrewAI 房地產情報監控核心主程式
-import os
-import sqlite3
 import yaml
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
@@ -8,6 +6,7 @@ from crewai.tools import tool
 # 💡 引入我們編寫的實體 Python 採集工具
 from tools.real_estate_tools import real_estate_collector_tool
 from tools.analyst_tools import query_region_trend_tool
+from tools.report_writer import write_markdown_report
 
 from dotenv import load_dotenv
 load_dotenv()  # 🎯 物理補丁：啟動時自動把同目錄下的 .env 變數灌進樹莓派記憶體中
@@ -117,11 +116,9 @@ def main():
 
     print("\n======  任務執行完編，正在產生 MD 報告  ======")
     output_filename = "real_estate_market_report.md"
-    with open(output_filename, "w", encoding="utf-8") as f:
-        f.write(str(result))
+    write_markdown_report(str(result), output_filename)
         
     print(f"🎉 成功！報告已輸出至同資料夾下的: {output_filename}")
 
 if __name__ == "__main__":
     main()
-
