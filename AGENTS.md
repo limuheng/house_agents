@@ -13,8 +13,9 @@
 - `tools/real_estate_transform.py`：官方交易資料的純轉換與解約指紋擷取。
 - `tools/real_estate_repository.py`：SQLite schema 初始化、交易寫入與解約標記。
 - `tools/analyst_tools.py`：資料庫查詢、坪數級距統計與熱區解約分析。
+- `tools/monthly_charts.py`：依地區及年月產出成屋／預售屋月交易量與價格 PNG 圖表；總價以千萬元、單價以萬元／坪顯示，交易數量刻度為整數。
+- `requirements-charts.txt`：月圖表工具所需 Matplotlib 相依套件。
 - `tools/report_writer.py`：Markdown 報告檔案輸出。
-- 季度統計與圖表程式：以可獨立執行、可排程的 Python 流程產出季度趨勢圖表；實際檔案及介面依實作更新本節。
 - `tools/historical_backfill.py`：歷史季度資料下載、驗證、回補協調及工具入口。
 - `config.yaml`：監控縣市、觀察熱區及分析級距設定。
 - `test_run.py`：手動執行當期更新並抽查資料庫；`test_analyst.py`：手動驗證區域速查工具。
@@ -74,6 +75,18 @@
    `./venv/bin/python test_run.py`（會連網更新並寫入設定的資料庫，效果包含步驟 1，非純測試。）
 7. **手動查詢區域速查工具**：
    `./venv/bin/python test_analyst.py`
+8. **安裝月圖表相依套件（首次使用）**：
+   在專案根目錄安裝 Python 繪圖套件 Matplotlib：
+   `./venv/bin/pip install -r requirements-charts.txt`
+   `requirements-charts.txt` 已列出 Matplotlib；Pandas、PyYAML 等由專案環境提供。若 Debian/Raspberry Pi OS 尚無中文字型，再執行：
+   `sudo apt-get update && sudo apt-get install -y fontconfig fonts-noto-cjk`
+   安裝字型後可用 `fc-cache -f` 更新字型快取；也可用圖表命令的 `--font` 指定已安裝的字型名稱或字型檔路徑。
+   `fc-list :lang=zh family | head` 查詢可用字型。
+9. **繪製指定期間及地區的月圖表**：
+   `./venv/bin/python -m tools.monthly_charts --start 2025.01 --end 2025.12 --area 頭份市`
+   預設輸出至 `report/charts/`，自動建立目錄並產生四張 PNG。檔名格式為
+   `{圖表目的}_{地區}_{起始年月}-{結束年月}_{繪製時間}.png`。
+   預設排除已標記解約的交易；如需納入可加 `--include-cancelled`。另可用 `--db`、`--config`、`--output-dir` 指定資料庫、級距設定及輸出目錄。
 
 ## 目前工作進度
 
@@ -84,5 +97,6 @@
 - 歷史匯入沿用熱區篩選、轉換與 Repository；交易指紋加入交易日期及戶別，並在 Upsert 時相容升級舊指紋。
 - 當期更新已改為獨立 Python 流程；市場分析入口已移除當期採集 Agent／Task，不會自動更新。
 - `tools/current_update.py` 與歷史回補共用不依賴 CrewAI 的交易匯入器；舊 `tools/real_estate_tools.py` 當期採集工具已移除。
-- 最近驗證：`./venv/bin/python -m unittest discover -s tests -v`，13 項測試通過；CLI 說明可正常顯示。未對正式資料庫執行當期下載或全量歷史回補。
+- 月圖表工具依 `config.yaml` 級距彙整成交量與價格；價格同時呈現估算總價（每坪單價 × 權狀總坪數）及每坪單價，各自提供月平均與中位數。圖表顯示總價單位為千萬元、單價為萬元／坪，交易數量刻度為整數；只轉換顯示值，不改變原始彙總資料。
+- 最近驗證：`./venv/bin/python -m unittest discover -s tests -v`，測試涵蓋日期邊界、參數化區域篩選、無效資料庫、空資料、彙總與四張 PNG 輸出。未對正式資料庫執行圖表產生。
 - 預覽不連網、不寫入；執行前仍應確認設定、備份資料庫，並先觀察官方無資料與失敗檔案統計。
