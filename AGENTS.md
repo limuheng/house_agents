@@ -2,12 +2,14 @@
 
 ## 專案目的
 
-本專案從內政部不動產交易 Open Data 下載 CSV，整理交易與解約資料至 SQLite，並提供季度統計與趨勢圖表，供使用者自行檢視市場變化。資料採集、整理及統計應可由一般 Python 程式定期執行（例如 cron），不應要求 CrewAI 或消耗 LLM token。`house_agent.py` 保留作為選用的市場分析入口；需要 Agent 分析時可重用共用的資料採集、查詢及統計程式碼，不應複製其領域邏輯。
+本專案從內政部不動產交易 Open Data 下載 CSV，整理交易與解約資料至 SQLite，並提供市場分析。當期資料更新由一般 Python 程式執行，不依賴 CrewAI；使用者手動更新後，`house_agent.py` 僅作為選用的市場分析入口，不會自動下載或更新資料。歷史回補仍保留獨立的 CrewAI Agent 入口。
 
 ## 主要檔案
 
-- `house_agent.py`：CrewAI Agent、Task 與主執行流程。
-- `tools/real_estate_tools.py`：官方資料下載、解析、SQLite 寫入與解約勾稽。
+- `house_agent.py`：市場分析 Agent 與歷史回補 Agent 的選用入口；一般分析不會採集資料。
+- `tools/current_update.py`：不依賴 CrewAI 的當期資料下載、驗證及匯入命令。
+- `tools/real_estate_settings.py`：共用資料庫路徑與縣市代碼。
+- `tools/transaction_importer.py`：歷史及當期資料共用的 CSV 篩選、轉換、匯入與解約勾稽。
 - `tools/real_estate_transform.py`：官方交易資料的純轉換與解約指紋擷取。
 - `tools/real_estate_repository.py`：SQLite schema 初始化、交易寫入與解約標記。
 - `tools/analyst_tools.py`：資料庫查詢、坪數級距統計與熱區解約分析。
@@ -15,19 +17,19 @@
 - 季度統計與圖表程式：以可獨立執行、可排程的 Python 流程產出季度趨勢圖表；實際檔案及介面依實作更新本節。
 - `tools/historical_backfill.py`：歷史季度資料下載、驗證、回補協調及工具入口。
 - `config.yaml`：監控縣市、觀察熱區及分析級距設定。
-- `test_run.py`、`test_analyst.py`：手動驗證腳本。
+- `test_run.py`：手動執行當期更新並抽查資料庫；`test_analyst.py`：手動驗證區域速查工具。
 - `real_estate.db`、`extracted_data/`、`report/`：執行資料與報告；修改前先確認其是否為使用者資料。
 
 ## 開發原則
 
 - 維持採集、資料轉換、持久化、分析與報告輸出的職責分離。
 - 固定、可重現的資料更新與季度統計由一般 Python 程式負責，設計成可重複執行並供 cron 呼叫；CrewAI 僅用於需要彈性自然語言推理的選用市場分析，不作為排程或例行統計的必要依賴。
-- Agent 與排程流程應共用資料採集、轉換、資料庫存取及統計模組；共用模組不得依賴 CrewAI，避免重複實作並確保不使用 Agent 時仍可完整更新及產圖。
+- 當期採集及排程流程不得依賴 CrewAI；Agent 與一般流程應共用轉換、Repository 及分析模組，避免重複實作領域邏輯。
 - 排程流程應能非互動執行、回報錯誤狀態，且避免重複資料或失敗時留下不完整更新；圖表應標示季度、樣本數及指標定義。
 - 新指標優先由設定驅動或新增獨立分析函式，不要將所有邏輯塞進 Agent 主流程。
 - 修改資料庫 schema 或資料指紋時，先確認舊資料相容性及重複資料處理方式。
 - 交易指紋需包含交易日期以區分跨季同戶交易；舊指紋應由 Repository 安全相容，不可直接丟棄既有紀錄。
-- 保持既有 CrewAI Tool 的名稱與介面相容；若要變更，應同步更新 Agent、Task 與測試。
+- 例行當期更新不透過 CrewAI Tool；變更仍在使用的 Agent Tool 介面時，應同步更新 Agent、Task 與測試。
 - Python 函式長度不得超過 80 行；函式應維持精簡、單一職責，過長或含多種流程的函式應拆分成可獨立測試的輔助函式。
 - 新增或修改程式碼時，沿用附近檔案的 Python 風格，並為重要資料轉換與領域規則補上繁體中文說明。
 - 遵循 SOLID 原則；高層流程應依賴清楚的介面與設定，不應將特定資料庫或傳輸實作散布於各模組。
@@ -46,8 +48,32 @@
 - 修改分析邏輯後，執行適用的分析驗證腳本，並檢查空資料與邊界級距。
 - 修改採集或資料庫寫入邏輯時，優先使用隔離的測試資料，不要未經確認就對正式資料庫執行採集。
 - 網路測試可能連接外部服務；執行前確認其副作用與是否會更新本地資料。
-- 一般執行不會啟動歷史回補；`--plan-backfill` 僅預覽，`--backfill-history` 才會呼叫回補 Agent 並寫入資料庫。
-- 歷史檔放在 `extracted_data/history/{season}/`；不要覆蓋當期 CSV，既有無效快取應保留並回報。
+- `house_agent.py` 一般執行只做市場分析，不會更新資料；執行前由使用者手動呼叫 `tools.current_update`。
+- `--plan-backfill` 僅預覽，不下載或寫入；`--backfill-history` 才呼叫回補 Agent 並寫入資料庫。
+- 歷史檔放在 `extracted_data/history/{season}/`；當期 CSV 放在 `extracted_data/current/`，兩者分開管理。歷史無效快取應保留並回報。
+
+## 使用方式
+
+以下命令均從專案根目錄 `/home/muheng/house_agents` 執行：
+
+1. **更新當期交易（不使用 Agent／不消耗 LLM token）**：
+   `./venv/bin/python -m tools.current_update`
+   讀取 `config.yaml` 的監控縣市與熱區，下載 A/B CSV 至 `extracted_data/current/`，驗證後匯入 `real_estate.db`。
+   可用 `--config`、`--db`、`--data-dir` 指定設定檔、資料庫或 CSV 目錄，例如：
+   `./venv/bin/python -m tools.current_update --config config.yaml --db real_estate.db --data-dir extracted_data/current`
+2. **市場分析（使用 LLM）**：
+   `./venv/bin/python house_agent.py`
+   僅查詢現有資料庫並產生 `real_estate_market_report.md`；不會自動更新。建議先執行步驟 1。
+3. **預覽歷史回補（不下載、不寫入）**：
+   `./venv/bin/python house_agent.py --plan-backfill`
+4. **執行歷史回補（會下載並寫入；會啟動 CrewAI Agent）**：
+   `./venv/bin/python house_agent.py --backfill-history`
+5. **執行自動化測試（隔離測試資料）**：
+   `./venv/bin/python -m unittest discover -s tests -v`
+6. **手動更新並抽查正式資料庫**：
+   `./venv/bin/python test_run.py`（會連網更新並寫入設定的資料庫，效果包含步驟 1，非純測試。）
+7. **手動查詢區域速查工具**：
+   `./venv/bin/python test_analyst.py`
 
 ## 目前工作進度
 
@@ -56,5 +82,7 @@
 - `--plan-backfill` 僅列出工作範圍；`--backfill-history` 才啟動 Agent、下載並匯入 SQLite。尚未對正式資料庫執行全量回補。
 - 官方對無資料季度可能回傳 HTTP 200 的「系統訊息」HTML；確認非 CSV 後列為「官方無資料」，不當成下載成功或格式錯誤。
 - 歷史匯入沿用熱區篩選、轉換與 Repository；交易指紋加入交易日期及戶別，並在 Upsert 時相容升級舊指紋。
-- 最近驗證：`./venv/bin/python -m unittest discover -s tests -v`，10 項測試通過；`--plan-backfill` 預覽為 109S1 至 115S4、28 季、5 縣市、A/B 共 280 個檔案。
+- 當期更新已改為獨立 Python 流程；市場分析入口已移除當期採集 Agent／Task，不會自動更新。
+- `tools/current_update.py` 與歷史回補共用不依賴 CrewAI 的交易匯入器；舊 `tools/real_estate_tools.py` 當期採集工具已移除。
+- 最近驗證：`./venv/bin/python -m unittest discover -s tests -v`，13 項測試通過；CLI 說明可正常顯示。未對正式資料庫執行當期下載或全量歷史回補。
 - 預覽不連網、不寫入；執行前仍應確認設定、備份資料庫，並先觀察官方無資料與失敗檔案統計。
