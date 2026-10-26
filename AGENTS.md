@@ -14,6 +14,7 @@
 - `tools/real_estate_repository.py`：SQLite schema 初始化、交易寫入與解約標記。
 - `tools/analyst_tools.py`：資料庫查詢、坪數級距統計與熱區解約分析。
 - `tools/monthly_charts.py`：依地區及年月產出成屋／預售屋月交易量與價格 PNG 圖表；總價以千萬元、單價以萬元／坪顯示，交易數量刻度為整數。
+- `tools/monthly_tables.py`：沿用月圖表的查詢與彙總邏輯，輸出成屋／預售屋交易量及價格統計 Markdown 表格。
 - `requirements-charts.txt`：月圖表工具所需 Matplotlib 相依套件。
 - `tools/report_writer.py`：Markdown 報告檔案輸出。
 - `tools/historical_backfill.py`：歷史季度資料下載、驗證、回補協調及工具入口。
@@ -86,7 +87,10 @@
    `./venv/bin/python -m tools.monthly_charts --start 2025.01 --end 2025.12 --area 頭份市`
    預設輸出至 `report/charts/`，自動建立目錄並產生四張 PNG。檔名格式為
    `{圖表目的}_{地區}_{起始年月}-{結束年月}_{繪製時間}.png`。
-   預設排除已標記解約的交易；如需納入可加 `--include-cancelled`。另可用 `--db`、`--config`、`--output-dir` 指定資料庫、級距設定及輸出目錄。
+    預設排除已標記解約的交易；如需納入可加 `--include-cancelled`。另可用 `--db`、`--config`、`--output-dir` 指定資料庫、級距設定及輸出目錄。
+10. **輸出指定期間及地區的月統計表**：
+    `./venv/bin/python -m tools.monthly_tables --start 2025.01 --end 2025.12 --area 頭份市`
+    預設輸出單一 Markdown 檔至 `report/charts/`，包含成屋／預售屋的交易量及價格統計表。查詢參數與月圖表一致；預設排除解約，可用 `--include-cancelled` 納入。價格單位為千萬元及萬元／坪，數量以整數呈現。
 
 ## 目前工作進度
 
@@ -97,6 +101,6 @@
 - 歷史匯入沿用熱區篩選、轉換與 Repository；交易指紋加入交易日期及戶別，並在 Upsert 時相容升級舊指紋。
 - 當期更新已改為獨立 Python 流程；市場分析入口已移除當期採集 Agent／Task，不會自動更新。
 - `tools/current_update.py` 與歷史回補共用不依賴 CrewAI 的交易匯入器；舊 `tools/real_estate_tools.py` 當期採集工具已移除。
-- 月圖表工具依 `config.yaml` 級距彙整成交量與價格；價格同時呈現估算總價（每坪單價 × 權狀總坪數）及每坪單價，各自提供月平均與中位數。圖表顯示總價單位為千萬元、單價為萬元／坪，交易數量刻度為整數；只轉換顯示值，不改變原始彙總資料。
+- 月圖表及 Markdown 表格工具依 `config.yaml` 級距彙整成交量與價格；價格同時呈現估算總價（每坪單價 × 權狀總坪數）及每坪單價，各自提供月平均與中位數。總價單位為千萬元、單價為萬元／坪，交易數量以整數呈現；只轉換顯示值，不改變原始彙總資料。Markdown 報表包含成屋／預售屋交易量及價格四張表。
 - 最近驗證：`./venv/bin/python -m unittest discover -s tests -v`，測試涵蓋日期邊界、參數化區域篩選、無效資料庫、空資料、彙總與四張 PNG 輸出。未對正式資料庫執行圖表產生。
 - 預覽不連網、不寫入；執行前仍應確認設定、備份資料庫，並先觀察官方無資料與失敗檔案統計。
