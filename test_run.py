@@ -1,10 +1,8 @@
-# test_run.py - 樹莓派本地端工具實地驗證腳本 (相容 2026 CrewAI 最新版)
+# test_run.py - 當期資料更新及資料庫結果手動驗證
 import os
 import sqlite3
-from datetime import datetime
 
-# 💡 匯入原生 CrewAI Tool 物件
-from tools.real_estate_tools import real_estate_collector_tool
+from tools.current_update import main as update_current_data
 
 def verify_database():
     """驗證資料庫寫入結果與結構"""
@@ -51,29 +49,9 @@ def verify_database():
         print(f"❌ 讀取資料庫時遭遇錯誤: {str(e)}")
 
 def main():
-    print("====== 🚀 啟動實體資料採集特工工具測試 ======")
-    
-    # 🎯 終極修復：利用 2026 CrewAI 官方標準解鎖手段提取底層實體純 Python 函式
-    raw_python_func = None
-    
-    # 優先手段：提取內建裝飾器封裝的實體原生功能
-    if hasattr(real_estate_collector_tool, 'func') and real_estate_collector_tool.func is not None:
-        raw_python_func = real_estate_collector_tool.func
-    elif hasattr(real_estate_collector_tool, 'fn') and real_estate_collector_tool.fn is not None:
-        raw_python_func = real_estate_collector_tool.fn
-    
-    if raw_python_func:
-        print("💡 成功破除 CrewAI 沙盒限制，正在以 Python 原生直連狀態扣下扳機...")
-        result = raw_python_func()
-    else:
-        # 保底手段：如果被深度封裝，直接使用底層標準的 _run 傳參驅動
-        print("💡 採用標準 _run() 屬性驅動工具...")
-        result = real_estate_collector_tool._run()
-        
-    print("\n[工具執行回傳摘要]")
-    print(result)
-    
-    # 執行資料庫實體數據驗證
+    print("====== 🚀 手動更新當期交易資料 ======")
+    if update_current_data() != 0:
+        return
     verify_database()
 
 if __name__ == "__main__":

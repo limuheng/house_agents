@@ -2,10 +2,7 @@
 import argparse
 import yaml
 from crewai import Agent, Task, Crew, Process, LLM
-from crewai.tools import tool
 
-# 💡 引入我們編寫的實體 Python 採集工具
-from tools.real_estate_tools import real_estate_collector_tool
 from tools.analyst_tools import query_region_trend_tool
 from tools.report_writer import write_markdown_report
 from tools.historical_backfill import build_preview, historical_backfill_tool
@@ -17,8 +14,6 @@ load_dotenv()  # 🎯 物理補丁：啟動時自動把同目錄下的 .env 變�
 with open("config.yaml", "r", encoding="utf-8") as f:
     config = yaml.safe_load(f)
 
-DB_FILE = "real_estate.db"
-
 # --- 🧠 定義符合最新 CrewAI 的 LLM 組態 ---
 gemini_llm = LLM(
     model="openai/gpt-6-luna",
@@ -27,22 +22,7 @@ gemini_llm = LLM(
     timeout=60.0            # 超時等待時間
 )
 
-# --- 🤖 建立 Agents ---
-data_collector = Agent(
-    role="房地產數據工程師",
-    goal=f"定期清洗並導入最新的房地產實登與解約資料，鎖定縣市：{', '.join(config['monitoring_settings']['target_regions'])}",
-    backstory=(
-        "你精通台灣實價登錄的自動化流程。你不需要自己去算數學，"
-        "你的核心任務是直接執行 'Real Estate Data Collector Tool' 工具，"
-        "讓實體 Python 腳本去處理複雜的下載、解壓、Pandas 公設扣除與解約勾稽，"
-        "並確認資料已順利原子化更新至本地 SQLite 資料庫即可。"
-    ),
-    tools=[real_estate_collector_tool],
-    verbose=True,
-    llm=gemini_llm,
-    max_iter=3
-)
-
+# --- 🤖 建立分析 Agent ---
 market_analyst = Agent(
     role="房地產數據科學家",
     goal="精準看透與分析實登數據中的成交與解約趨勢，無情戮破代銷與建商的話術騙局。",
@@ -69,17 +49,7 @@ historical_data_agent = Agent(
     max_iter=2
 )
 
-# --- 📋 建立 Tasks ---
-collect_task = Task(
-    description=(
-        "請直接呼叫 'Real Estate Data Collector Tool' 工具。工具會自動讀取 config.yaml，"
-        "將目標行政區的最新實價登錄與解約原始檔下載、清洗並更新至本地 SQLite 資料庫。"
-        "請不要試圖自己去讀取大體積的 CSV，執行完工具後，直接回報工具產出的更新筆數與解約標記摘要即可。"
-    ),
-    expected_output="資料庫更新成功報告，列出本次焦點行政區新增/更新買賣與預售解約的筆率統計摘要。",
-    agent=data_collector
-)
-
+# --- 📋 建立分析 Tasks ---
 intervals_desc = "\n".join([f"- {i['label']}: 範圍限制為實際室內淨坪 {i['min']} 到 {i['max']} 坪" for i in config['analysis_indicators']['ping_intervals']])
 
 analyze_task_1 = Task(
@@ -142,7 +112,7 @@ def _run_historical_backfill() -> None:
 
 def _parse_args():
     """解析一般分析、回補預覽及實際回補選項。"""
-    parser = argparse.ArgumentParser(description="房地產資料採集與歷史回補")
+    parser = argparse.ArgumentParser(description="房地產市場分析與歷史回補")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--plan-backfill", action="store_true", help="僅預覽回補範圍")
     mode.add_argument("--backfill-history", action="store_true", help="執行歷史資料回補")
@@ -158,8 +128,8 @@ def main():
         _run_historical_backfill()
         return
     crew = Crew(
-        agents=[data_collector, market_analyst],
-        tasks=[collect_task, analyze_task_1, analyze_task_2, analyze_task_3],
+        agents=[market_analyst],
+        tasks=[analyze_task_1, analyze_task_2, analyze_task_3],
         process=Process.sequential,
         verbose=True,
         max_rpm=20  
