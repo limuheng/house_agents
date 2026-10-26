@@ -18,6 +18,7 @@ class TransformationTests(unittest.TestCase):
             "主建物面積": 60,
             "附屬建物面積": 10,
             "建物移轉總面積平方公尺": 120,
+            "車位移轉總面積平方公尺": 10,
             "單價元平方公尺": 100000,
             "交易年月日": "1150915",
             "鄉鎮市區": "頭份市",
@@ -29,6 +30,8 @@ class TransformationTests(unittest.TestCase):
         record = parse_transaction(row, 0, "k", "苗栗縣")
         self.assertEqual(record["deal_date"], "2026-09-15")
         self.assertEqual(record["region"], "苗栗縣頭份市")
+        self.assertAlmostEqual(record["deed_ping"], 33.275)
+        self.assertAlmostEqual(record["main_building_ping"], 18.15)
         self.assertEqual(clean_hotspots(["苗栗縣頭份市"]), ["頭份市"])
 
 
@@ -43,7 +46,8 @@ class PersistenceTests(unittest.TestCase):
                 "deal_date": "2026-09-15", "region": "苗栗縣頭份市",
                 "project_name": "測試案", "building_type": "住宅大樓",
                 "floor": "十層", "unit_id": "A1", "total_ping": 36.3,
-                "actual_ping": 21.2, "parking_price": 0,
+                "actual_ping": 21.2, "deed_ping": 33.275,
+                "main_building_ping": 18.15, "parking_price": 0,
                 "price_per_ping": 330580, "is_presale": 0,
                 "is_cancelled": 0, "cancelled_date": None,
                 "fingerprint": "test-fingerprint",

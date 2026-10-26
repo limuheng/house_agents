@@ -33,6 +33,7 @@ class RealEstateRepository:
                     deal_date TEXT NOT NULL, region TEXT NOT NULL,
                     project_name TEXT, building_type TEXT, floor TEXT,
                     unit_id TEXT, total_ping REAL, actual_ping REAL,
+                    deed_ping REAL, main_building_ping REAL,
                     parking_price INTEGER, price_per_ping INTEGER,
                     house_age REAL, is_presale BOOLEAN DEFAULT 0,
                     is_cancelled BOOLEAN DEFAULT 0, cancelled_date TEXT,
@@ -84,10 +85,15 @@ class RealEstateRepository:
 _UPSERT_SQL = """
     INSERT INTO real_estate_deals (
         deal_date, region, project_name, building_type, floor, unit_id,
-        total_ping, actual_ping, parking_price, price_per_ping, house_age,
+        total_ping, actual_ping, deed_ping, main_building_ping,
+        parking_price, price_per_ping, house_age,
         is_presale, is_cancelled, cancelled_date, fingerprint
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
     ON CONFLICT(fingerprint) DO UPDATE SET
+        total_ping=excluded.total_ping,
+        actual_ping=excluded.actual_ping,
+        deed_ping=excluded.deed_ping,
+        main_building_ping=excluded.main_building_ping,
         price_per_ping=excluded.price_per_ping,
         is_cancelled=CASE WHEN real_estate_deals.is_cancelled=1 THEN 1 ELSE excluded.is_cancelled END,
         cancelled_date=CASE WHEN real_estate_deals.is_cancelled=1 THEN real_estate_deals.cancelled_date ELSE excluded.cancelled_date END
@@ -98,7 +104,8 @@ def _record_values(record: dict) -> tuple:
     """依 SQL 欄位順序建立參數，避免字串拼接查詢。"""
     return tuple(record[key] for key in (
         "deal_date", "region", "project_name", "building_type", "floor",
-        "unit_id", "total_ping", "actual_ping", "parking_price",
+        "unit_id", "total_ping", "actual_ping", "deed_ping",
+        "main_building_ping", "parking_price",
         "price_per_ping", "is_presale", "is_cancelled", "cancelled_date",
         "fingerprint"
     ))

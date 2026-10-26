@@ -19,9 +19,10 @@ import yaml
 from tools.real_estate_settings import DB_PATH
 
 CONFIG_PATH = "config.yaml"
+SUPPORTED_BUILDING_TYPES = r"^(住宅大樓|華廈|公寓|透天厝)"
 QUERY = """
-    SELECT deal_date, region, project_name, total_ping, actual_ping,
-           price_per_ping, is_presale, is_cancelled
+    SELECT deal_date, region, project_name, building_type, total_ping, actual_ping,
+           deed_ping, main_building_ping, price_per_ping, is_presale, is_cancelled
     FROM real_estate_deals
     WHERE deal_date >= ? AND deal_date < ? AND instr(region, ?) > 0
 """
@@ -89,13 +90,16 @@ def load_transactions(settings: ChartSettings) -> pd.DataFrame:
             QUERY, connection,
             params=(settings.start.isoformat(), end_exclusive.isoformat(), settings.area),
         )
+    building_types = frame["building_type"].fillna("").astype(str).str.strip()
+    frame = frame[building_types.str.match(SUPPORTED_BUILDING_TYPES)].copy()
     if not settings.include_cancelled and not frame.empty:
         frame = frame[frame["is_cancelled"].fillna(0).astype(int) == 0].copy()
     return frame
 
 
 def prepare_chart_data(frame: pd.DataFrame, settings: ChartSettings,
-                       intervals: list[dict]) -> ChartData:
+                       intervals: list[dict], size_field: str = "actual_ping",
+                       price_area_field: str = "total_ping") -> ChartData:
     """新增月份、坪數級距、估算總價及可標註名稱欄位。"""
     months = [period.strftime("%Y.%m") for period in pd.period_range(
         settings.start, settings.end, freq="M"
@@ -105,8 +109,8 @@ def prepare_chart_data(frame: pd.DataFrame, settings: ChartSettings,
         result = _empty_chart_frame(result)
     else:
         result["month"] = pd.to_datetime(result["deal_date"]).dt.strftime("%Y.%m")
-        result["size_label"] = _assign_intervals(result["actual_ping"], intervals)
-        result["total_price_estimate"] = result["price_per_ping"] * result["total_ping"]
+        result["size_label"] = _assign_intervals(result[size_field], intervals)
+        result["total_price_estimate"] = result["price_per_ping"] * result[price_area_field]
         result["plot_name"] = _plot_names(result)
         result = result[result["size_label"].notna()].copy()
     return ChartData(result, months, intervals)

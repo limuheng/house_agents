@@ -21,57 +21,105 @@ from tools.real_estate_settings import DB_PATH
 
 
 def _volume_table(data: ChartData) -> pd.DataFrame:
-    """整理每月坪數級距交易量及該級距最熱絡建案。"""
+    """以月份為欄整理各坪數級距交易量及領先建案。"""
     counts, leaders = aggregate_volume(data)
     rows = []
-    for month in data.months:
-        for item in data.intervals:
-            label = item["label"]
-            leader, leader_count = leaders.get((month, label), ("—", 0))
-            rows.append({
-                "月份": month,
-                "實際室內坪數": label,
-                "交易筆數": int(counts.loc[month, label]),
-                "交易量最高建案／區域": leader,
-                "該建案／區域筆數": int(leader_count),
-            })
-    return pd.DataFrame(rows)
+    for item in data.intervals:
+        label = item["label"]
+        rows.extend(_volume_rows(label, data.months, counts, leaders))
+    return _pivot_frame(rows, data.months)
 
 
-def _price_table(data: ChartData) -> pd.DataFrame:
-    """整理各級距價格平均、中位數及最高價交易標籤。"""
+def _volume_rows(label, months, counts, leaders) -> list[dict]:
+    """建立單一坪數級距的月交易筆數與領先建案列。"""
+    count_row = _pivot_row(label, "交易筆數", months)
+    leader_row = _pivot_row(label, "交易量最高建案／區域", months)
+    for month in months:
+        count_row[month] = int(counts.loc[month, label])
+        leader = leaders.get((month, label))
+        leader_row[month] = f"{leader[0]}（{leader[1]}筆）" if leader else "—"
+    return [count_row, leader_row]
+
+
+def _price_metric_table(data: ChartData, field: str,
+                        divisor: int, unit: str) -> pd.DataFrame:
+    """建立獨立的價格指標月表，包含樣本數、平均、中位數及最高案名。"""
     metrics, leaders = aggregate_prices(data)
-    total = metrics["total_price_estimate"]
-    unit = metrics["price_per_ping"]
-    total_leaders = leaders["total_price_estimate"]
-    unit_leaders = leaders["price_per_ping"]
+    values = metrics[field]
+    best_deals = leaders[field]
+    counts = data.frame.groupby(["month", "size_label"]).size()
     rows = []
-    for month in data.months:
-        for item in data.intervals:
-            label = item["label"]
-            key = (month, label)
-            total_stats = total.loc[key] if key in total.index else None
-            unit_stats = unit.loc[key] if key in unit.index else None
-            rows.append(_price_row(
-                month, label, total_stats, unit_stats,
-                total_leaders.get(key), unit_leaders.get(key),
-            ))
-    return pd.DataFrame(rows)
+    for item in data.intervals:
+        label = item["label"]
+        rows.extend(_price_rows(
+            label, data.months, values, best_deals, counts, divisor, unit
+        ))
+    return _pivot_frame(rows, data.months)
 
 
-def _price_row(month, label, total_stats, unit_stats,
-               total_leader, unit_leader) -> dict:
-    """建立單月單級距價格資料列並轉換成圖表使用單位。"""
-    return {
-        "月份": month,
-        "實際室內坪數": label,
-        "總價平均（千萬元）": _scaled_stat(total_stats, "mean", 10_000_000),
-        "總價中位數（千萬元）": _scaled_stat(total_stats, "median", 10_000_000),
-        "總價最高價建案／區域": total_leader[0] if total_leader else "—",
-        "單價平均（萬元／坪）": _scaled_stat(unit_stats, "mean", 10_000),
-        "單價中位數（萬元／坪）": _scaled_stat(unit_stats, "median", 10_000),
-        "單價最高價建案／區域": unit_leader[0] if unit_leader else "—",
-    }
+def _price_rows(label, months, values, leaders, counts,
+                divisor: int, unit: str) -> list[dict]:
+    """為單一坪數級距建立價格指標、樣本數及最高案名列。"""
+    specs = (
+        ("交易筆數", "count"),
+        (f"平均（{unit}）", "mean"),
+        (f"中位數（{unit}）", "median"),
+        ("最高價建案／區域", "leader"),
+    )
+    rows = [_pivot_row(label, title, months) for title, _ in specs]
+    for month in months:
+        key = (month, label)
+        stats = values.loc[key] if key in values.index else None
+        best = leaders.get(key)
+        values_by_stat = {
+            "count": int(counts.get(key, 0)),
+            "mean": _scaled_stat(stats, "mean", divisor),
+            "median": _scaled_stat(stats, "median", divisor),
+            "leader": best[0] if best else "—",
+        }
+        for row, (_, stat) in zip(rows, specs):
+            row[month] = values_by_stat[stat]
+    return rows
+
+
+def _interior_metrics(data: ChartData) -> pd.DataFrame:
+    """只以官方主建物面積計算室內實坪平均與中位數。"""
+    if "main_building_ping" not in data.frame:
+        return pd.DataFrame()
+    values = pd.to_numeric(data.frame["main_building_ping"], errors="coerce")
+    valid = data.frame.loc[values > 0, ["month", "size_label"]].copy()
+    valid["main_building_ping"] = values[values > 0]
+    return valid.groupby(["month", "size_label"])["main_building_ping"].agg(
+        mean="mean", median="median"
+    )
+
+
+def _interior_table(data: ChartData) -> pd.DataFrame:
+    """有主建物面積資料時，輸出室內實坪的月平均與中位數。"""
+    stats = _interior_metrics(data)
+    if stats.empty:
+        return pd.DataFrame()
+    rows = []
+    for item in data.intervals:
+        label = item["label"]
+        for field, title in (("mean", "平均室內實坪"), ("median", "室內實坪中位數")):
+            row = _pivot_row(label, title, data.months)
+            for month in data.months:
+                key = (month, label)
+                row[month] = round(float(stats.loc[key, field]), 2) if key in stats.index else "—"
+            rows.append(row)
+    return _pivot_frame(rows, data.months)
+
+
+def _pivot_row(label, statistic, months) -> dict:
+    """建立月份為欄的表格空列。"""
+    return {"權狀坪數（不含車位）": label, "統計項目": statistic, **{month: "—" for month in months}}
+
+
+def _pivot_frame(rows, months) -> pd.DataFrame:
+    """確保每張月表均以月份作為欄並維持指定順序。"""
+    columns = ["權狀坪數（不含車位）", "統計項目", *months]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _scaled_stat(stats, field: str, divisor: int) -> float | str:
@@ -106,7 +154,9 @@ def _report_markdown(data: ChartData, settings: ChartSettings) -> str:
         "",
         f"- 統計期間：{settings.start:%Y.%m} 至 {settings.end:%Y.%m}",
         f"- 解約交易：{cancellation}",
-        "- 成交總價為每坪單價乘以權狀總坪數的估算值。",
+        "- 坪數級距採建物移轉面積扣除車位面積；缺少車位面積的交易不納入級距。",
+        "- 室內實坪僅採官方主建物面積；附屬建物與公設不計，缺值不推估。",
+        "- 總價為每坪單價乘以不含車位權狀坪數的估算值。",
         "",
     ]
     for is_presale, label in ((False, "成屋"), (True, "預售屋")):
@@ -117,17 +167,34 @@ def _report_markdown(data: ChartData, settings: ChartSettings) -> str:
 
 
 def _category_sections(data: ChartData, label: str) -> list[str]:
-    """建立單一交易類型的交易量及價格統計章節。"""
-    return [
+    """建立單一交易類型的交易量、總價及單價月表章節。"""
+    sections = [
         f"## {label}交易量",
         "",
         _markdown_table(_volume_table(data)),
         "",
-        f"## {label}價格統計",
+        f"## {label}估算總價（千萬元）",
         "",
-        _markdown_table(_price_table(data)),
+        _markdown_table(_price_metric_table(
+            data, "total_price_estimate", 10_000_000, "千萬元"
+        )),
+        "",
+        f"## {label}成交單價（萬元／坪）",
+        "",
+        _markdown_table(_price_metric_table(
+            data, "price_per_ping", 10_000, "萬元／坪"
+        )),
         "",
     ]
+    interior = _interior_table(data)
+    if not interior.empty:
+        sections.extend([
+            f"## {label}室內實坪（主建物）",
+            "",
+            _markdown_table(interior),
+            "",
+        ])
+    return sections
 
 
 def generate_tables(settings: ChartSettings) -> Path:
@@ -139,7 +206,10 @@ def generate_tables(settings: ChartSettings) -> Path:
     intervals = load_intervals(settings.config)
     frame = load_transactions(settings)
     frame = frame[frame["is_presale"].fillna(0).astype(int).isin([0, 1])]
-    data = prepare_chart_data(frame, settings, intervals)
+    data = prepare_chart_data(
+        frame, settings, intervals,
+        size_field="deed_ping", price_area_field="deed_ping",
+    )
     return _write_report(_report_markdown(data, settings), settings)
 
 
@@ -162,7 +232,7 @@ def parse_args(argv=None):
     parser.add_argument("--end", required=True, type=parse_month, help="結束年月，例如 2025.12")
     parser.add_argument("--area", required=True, help="行政區關鍵字，例如 頭份市")
     parser.add_argument("--db", default=DB_PATH, help="SQLite 資料庫路徑")
-    parser.add_argument("--output-dir", default="report/charts", help="Markdown 輸出資料夾")
+    parser.add_argument("--output-dir", default="report/tables", help="Markdown 輸出資料夾")
     parser.add_argument("--config", default=CONFIG_PATH, help="坪數級距設定檔")
     parser.add_argument("--include-cancelled", action="store_true", help="將已標記解約交易納入統計")
     parser.add_argument("--font", help="相容圖表工具的字型參數；Markdown 不使用此設定")

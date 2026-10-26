@@ -86,19 +86,24 @@ class MonthlyChartIntegrationTests(unittest.TestCase):
         self._insert(repository, "2025-01-15", "苗栗縣頭份市", "Pre-sale", 40, 40, 250000, 1, 0)
         self._insert(repository, "2025-01-20", "苗栗縣頭份市", "Cancelled", 20, 30, 90000, 1, 1)
         self._insert(repository, "2025-01-22", "新竹縣竹北市", "Other Area", 20, 30, 99000, 0, 0)
+        self._insert(repository, "2025-01-24", "苗栗縣頭份市", "Suite", 20, 30, 80000, 0, 0,
+                     "套房(1房1廳1衛)")
+        self._insert(repository, "2025-01-25", "苗栗縣頭份市", "Other Type", 20, 30, 80000, 0, 0,
+                     "其他")
 
     def tearDown(self):
         self.directory.cleanup()
 
     @staticmethod
-    def _insert(repository, day, area, project, actual, total, price, presale, cancelled):
+    def _insert(repository, day, area, project, actual, total, price, presale,
+                cancelled, building_type="住宅大樓(11層含以上有電梯)"):
         with repository.transaction() as connection:
             connection.execute(
                 "INSERT INTO real_estate_deals "
-                "(deal_date, region, project_name, actual_ping, total_ping, "
+                "(deal_date, region, project_name, building_type, actual_ping, total_ping, "
                 "price_per_ping, is_presale, is_cancelled, fingerprint) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (day, area, project, actual, total, price, presale, cancelled,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (day, area, project, building_type, actual, total, price, presale, cancelled,
                  f"{day}-{project}"),
             )
 
@@ -115,6 +120,22 @@ class MonthlyChartIntegrationTests(unittest.TestCase):
         self.assertEqual(len(active), 3)
         self.assertEqual(len(inclusive), 4)
         self.assertTrue(active["region"].str.contains("頭份市").all())
+
+    def test_apartment_and_townhouse_types_are_included(self):
+        repository = RealEstateRepository(str(self.database))
+        self._insert(repository, "2025-01-24", "測試地區", "Apartment", 20, 30,
+                     100000, 0, 0, "公寓(5樓含以下無電梯)")
+        self._insert(repository, "2025-01-25", "測試地區", "Townhouse", 20, 30,
+                     100000, 0, 0, "透天厝")
+        settings = self._settings()
+        settings = ChartSettings(
+            settings.start, settings.end, "測試地區", settings.database,
+            settings.output_dir, settings.config,
+        )
+        result = load_transactions(settings)
+        self.assertEqual(set(result["building_type"]), {
+            "公寓(5樓含以下無電梯)", "透天厝",
+        })
 
     def test_missing_database_does_not_create_a_file(self):
         missing = Path(self.directory.name) / "missing.db"

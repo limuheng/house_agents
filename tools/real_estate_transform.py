@@ -17,6 +17,17 @@ def _number(row, field: str) -> float:
     return float(value) if pd.notna(value) else 0.0
 
 
+def _optional_area_ping(row, field: str,
+                        empty_is_zero: bool = False) -> float | None:
+    """將官方面積平方公尺轉成坪；缺少欄位時保留未知。"""
+    if field not in row:
+        return None
+    value = row.get(field)
+    if pd.isna(value):
+        return 0.0 if empty_is_zero else None
+    return float(value) * 0.3025
+
+
 def _deal_date(value) -> str:
     """將民國年月日轉成西元 ISO 日期。"""
     raw = str(value)
@@ -41,18 +52,26 @@ def _build_record(row, is_presale: int, county_code: str,
     total_price = _number(row, "總價元")
     total_ping = _number(row, "建物移轉總面積平方公尺") * 0.3025
     actual_ping = (_number(row, "主建物面積") + _number(row, "附屬建物面積")) * 0.3025
+    parking_ping = _optional_area_ping(
+        row, "車位移轉總面積平方公尺", empty_is_zero=True
+    )
+    deed_ping = total_ping - parking_ping if parking_ping is not None else None
+    main_building_ping = _optional_area_ping(row, "主建物面積")
     if actual_ping <= 0:
         actual_ping = total_ping
     if total_ping <= 0 or total_price <= 0:
         return None
 
     return _record_fields(row, is_presale, county_code, parent_county,
-                          total_price, total_ping, actual_ping)
+                          total_price, total_ping, actual_ping, deed_ping,
+                          main_building_ping)
 
 
 def _record_fields(row, is_presale: int, county_code: str,
                    parent_county: str, total_price: float,
-                   total_ping: float, actual_ping: float) -> dict:
+                   total_ping: float, actual_ping: float,
+                   deed_ping: float | None,
+                   main_building_ping: float | None) -> dict:
     """組合標準交易欄位與穩定指紋。"""
     unit_price = (round(total_price / total_ping) if is_presale else
                   _number(row, "單價元平方公尺") * 3.3058)
@@ -76,6 +95,8 @@ def _record_fields(row, is_presale: int, county_code: str,
         "unit_id": unit_id,
         "total_ping": total_ping,
         "actual_ping": actual_ping,
+        "deed_ping": deed_ping,
+        "main_building_ping": main_building_ping,
         "parking_price": int(_number(row, "車位總價元")),
         "price_per_ping": int(unit_price),
         "is_presale": is_presale,

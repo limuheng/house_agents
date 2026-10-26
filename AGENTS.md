@@ -13,8 +13,8 @@
 - `tools/real_estate_transform.py`：官方交易資料的純轉換與解約指紋擷取。
 - `tools/real_estate_repository.py`：SQLite schema 初始化、交易寫入與解約標記。
 - `tools/analyst_tools.py`：資料庫查詢、坪數級距統計與熱區解約分析。
-- `tools/monthly_charts.py`：依地區及年月產出成屋／預售屋月交易量與價格 PNG 圖表；總價以千萬元、單價以萬元／坪顯示，交易數量刻度為整數。
-- `tools/monthly_tables.py`：沿用月圖表的查詢與彙總邏輯，輸出成屋／預售屋交易量及價格統計 Markdown 表格。
+- `tools/monthly_charts.py`：依地區及年月產出成屋／預售屋月交易量與價格 PNG 圖表；僅納入電梯大樓、華廈、公寓、透天厝；總價以千萬元、單價以萬元／坪顯示，交易數量刻度為整數。
+- `tools/monthly_tables.py`：依不含車位權狀坪數分級，僅納入電梯大樓、華廈、公寓、透天厝；Markdown 月表以月份為欄，總價與單價分表，有資料時附主建物室內坪數統計。
 - `requirements-charts.txt`：月圖表工具所需 Matplotlib 相依套件。
 - `tools/report_writer.py`：Markdown 報告檔案輸出。
 - `tools/historical_backfill.py`：歷史季度資料下載、驗證、回補協調及工具入口。
@@ -90,7 +90,7 @@
     預設排除已標記解約的交易；如需納入可加 `--include-cancelled`。另可用 `--db`、`--config`、`--output-dir` 指定資料庫、級距設定及輸出目錄。
 10. **輸出指定期間及地區的月統計表**：
     `./venv/bin/python -m tools.monthly_tables --start 2025.01 --end 2025.12 --area 頭份市`
-    預設輸出單一 Markdown 檔至 `report/charts/`，包含成屋／預售屋的交易量及價格統計表。查詢參數與月圖表一致；預設排除解約，可用 `--include-cancelled` 納入。價格單位為千萬元及萬元／坪，數量以整數呈現。
+     預設輸出單一 Markdown 檔至 `report/tables/`，包含成屋／預售屋的交易量及價格統計表。查詢參數與月圖表一致；預設排除解約，可用 `--include-cancelled` 納入。價格單位為千萬元及萬元／坪，數量以整數呈現。
 
 ## 目前工作進度
 
@@ -101,6 +101,9 @@
 - 歷史匯入沿用熱區篩選、轉換與 Repository；交易指紋加入交易日期及戶別，並在 Upsert 時相容升級舊指紋。
 - 當期更新已改為獨立 Python 流程；市場分析入口已移除當期採集 Agent／Task，不會自動更新。
 - `tools/current_update.py` 與歷史回補共用不依賴 CrewAI 的交易匯入器；舊 `tools/real_estate_tools.py` 當期採集工具已移除。
-- 月圖表及 Markdown 表格工具依 `config.yaml` 級距彙整成交量與價格；價格同時呈現估算總價（每坪單價 × 權狀總坪數）及每坪單價，各自提供月平均與中位數。總價單位為千萬元、單價為萬元／坪，交易數量以整數呈現；只轉換顯示值，不改變原始彙總資料。Markdown 報表包含成屋／預售屋交易量及價格四張表。
+- CSV 轉換會保存不含車位權狀坪數及主建物坪數；月統計表以不含車位坪數分級、估算總價，主建物坪數作為室內實坪參考，缺值不推估。月圖表仍維持原本分級規則。
+- Markdown 表格依成屋／預售屋分類，月份為欄；交易量、估算總價、成交單價分表，價格表按坪數級距附交易筆數。總價單位為千萬元、單價為萬元／坪，筆數為整數。
+- 圖表及 Markdown 表格共用交易型態篩選，只保留 `住宅大樓`、`華廈`、`公寓`、`透天厝`；套房及其他建物類型排除。
+- 資料庫 schema 新增 `deed_ping` 與 `main_building_ping`；開發資料庫已移除，重新執行歷史回補會建立新 schema。歷史回補會重試缺少的快取 CSV，官方無資料則略過。
 - 最近驗證：`./venv/bin/python -m unittest discover -s tests -v`，測試涵蓋日期邊界、參數化區域篩選、無效資料庫、空資料、彙總與四張 PNG 輸出。未對正式資料庫執行圖表產生。
 - 預覽不連網、不寫入；執行前仍應確認設定、備份資料庫，並先觀察官方無資料與失敗檔案統計。
