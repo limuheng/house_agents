@@ -24,6 +24,10 @@ historical_backfill:
   data_types: ["A", "B"]
   history_dir: "extracted_data/history"
 
+# 當期下載不依賴 Agent；CSV 與歷史回補檔案分開保存
+current_update:
+  data_dir: "extracted_data/current"
+
 analysis_indicators:
   # 彈性坪數級距定義：未來想改看鳥籠或豪宅，修改此數字與標籤即可，SQL工具會動態組裝
   ping_intervals:

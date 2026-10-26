@@ -6,18 +6,16 @@ import os
 from pathlib import Path
 import time
 
-import pandas as pd
 import requests
 import yaml
 from crewai.tools import tool
 
 from tools.real_estate_repository import RealEstateRepository
-from tools.real_estate_tools import COUNTY_CODE_MAP, DB_PATH
-from tools.real_estate_transform import clean_hotspots, parse_transaction
+from tools.real_estate_settings import COUNTY_CODE_MAP, DB_PATH
+from tools.transaction_importer import TransactionCsvImporter
 
 CONFIG_PATH = "config.yaml"
 BASE_URL = "https://plvr.land.moi.gov.tw//DownloadSeason"
-REQUIRED_COLUMNS = {"鄉鎮市區", "建物型態", "交易年月日", "總價元"}
 
 
 @dataclass(frozen=True)
@@ -196,42 +194,7 @@ def _is_unavailable(content: bytes, content_type: str = "") -> bool:
     return is_html and "系統訊息" in text and "鄉鎮市區" not in text
 
 
-class HistoricalTransactionImporter:
-    """將單一歷史 CSV 轉換並透過 Repository 分檔提交。"""
-
-    def __init__(self, repository: RealEstateRepository):
-        self.repository = repository
-
-    def import_file(self, path: Path, code: str, county: str,
-                    data_type: str, hotspots: tuple[str, ...]) -> int:
-        """篩選熱區並寫入資料庫，回傳成功 upsert 筆數。"""
-        frame = pd.read_csv(path, skiprows=[1], low_memory=False)
-        missing = REQUIRED_COLUMNS.difference(frame.columns)
-        if missing:
-            raise ValueError(f"CSV 欄位缺漏: {', '.join(sorted(missing))}")
-        filtered = self._filter_rows(frame, hotspots)
-        is_presale = int(data_type == "B")
-        return self._persist_rows(filtered, code, county, is_presale)
-
-    def _filter_rows(self, frame: pd.DataFrame,
-                     hotspots: tuple[str, ...]) -> pd.DataFrame:
-        """維持與現行採集流程一致的熱區及建物型態篩選。"""
-        clean = clean_hotspots(list(hotspots))
-        selected = frame[frame["鄉鎮市區"].isin(clean)]
-        return selected[selected["建物型態"].str.contains(
-            "大樓|華廈|透天", na=False, regex=True
-        )]
-
-    def _persist_rows(self, frame: pd.DataFrame, code: str,
-                      county: str, is_presale: int) -> int:
-        """逐檔交易提交，避免單一季失敗回滾全部歷史資料。"""
-        inserted = 0
-        with self.repository.transaction() as connection:
-            cursor = connection.cursor()
-            for _, row in frame.iterrows():
-                record = parse_transaction(row, is_presale, code, county)
-                inserted += int(self.repository.upsert(cursor, record))
-        return inserted
+HistoricalTransactionImporter = TransactionCsvImporter
 
 
 class HistoricalBackfillService:
@@ -242,7 +205,7 @@ class HistoricalBackfillService:
         self.settings = settings
         self.downloader = downloader or HistoricalCsvDownloader()
         self.repository = repository or RealEstateRepository(DB_PATH)
-        self.importer = HistoricalTransactionImporter(self.repository)
+        self.importer = TransactionCsvImporter(self.repository)
 
     def preview(self) -> str:
         """列出回補範圍與檔案數，不下載或寫入資料。"""
@@ -281,9 +244,10 @@ class HistoricalBackfillService:
                 summary.unavailable += 1
                 return
             setattr(summary, status, getattr(summary, status) + 1)
-            summary.inserted += self.importer.import_file(
+            inserted = self.importer.import_file(
                 path, code, county, data_type, self.settings.hotspots
             )
+            summary.inserted += inserted
         except Exception as error:
             summary.failed += 1
             print(f"⚠️ 回補失敗 {season}/{code}/{data_type}: {error}")

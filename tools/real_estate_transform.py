@@ -91,7 +91,8 @@ def cancelled_fingerprints(csv_path: str, county_code: str,
     """從預售 CSV 擷取焦點區已解約交易的指紋。"""
     df = pd.read_csv(csv_path, skiprows=[1], low_memory=False)
     df = df[df["鄉鎮市區"].isin(hotspots)]
-    cancelled = df[df["備註"].str.contains("解約|取消", na=False, errors="ignore")]
+    notes = df["備註"].fillna("").astype(str)
+    cancelled = df[notes.str.contains("解約|取消", na=False, regex=True)]
     return [_fingerprint(row, county_code) for _, row in cancelled.iterrows()]
 
 

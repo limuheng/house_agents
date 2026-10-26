@@ -7,24 +7,14 @@ import requests  # 保留內建的，給其他標準傳輸使用
 from curl_cffi import requests as curl_requests  # 重新命名，徹底避開覆蓋衝突
 from crewai.tools import tool
 from tools.real_estate_repository import RealEstateRepository
+from tools.real_estate_settings import COUNTY_CODE_MAP, DB_PATH
 from tools.real_estate_transform import (
     cancelled_fingerprints,
     clean_hotspots,
     parse_transaction,
 )
 
-DB_PATH = "real_estate.db"
 CONFIG_PATH = "config.yaml"
-
-# 縣市與代碼映射表
-COUNTY_CODE_MAP = {
-    "台北市": "a", "基隆市": "c", "新北市": "f", "宜蘭縣": "g",
-    "桃園市": "h", "新竹市": "o", "新竹縣": "j", "苗栗縣": "k",
-    "台中市": "b", "彰化縣": "n", "南投縣": "m", "雲林縣": "p",
-    "嘉義市": "i", "嘉義縣": "q", "台南市": "d", "高雄市": "e",
-    "屏東縣": "t", "花蓮縣": "v", "台東縣": "v", "澎湖縣": "x",
-    "金門縣": "w", "連江縣": "z"
-}
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
@@ -93,7 +83,7 @@ def download_single_csv(file_name: str, save_dir: str, max_attempts: int = 3) ->
 
     for attempt in range(1, max_attempts + 1):
         try:
-            res = requests.get(download_url, headers=clean_headers, timeout=45, verify=False)
+            res = requests.get(download_url, headers=clean_headers, timeout=45, verify=True)
             if res.status_code == 200:
                 try:
                     content_text = res.content.decode('utf-8', errors='ignore')
